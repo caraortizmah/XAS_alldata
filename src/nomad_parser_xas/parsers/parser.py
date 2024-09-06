@@ -1,6 +1,4 @@
-from typing import (
-    TYPE_CHECKING, Optional, Union
-)
+from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
     from nomad.datamodel.datamodel import (
@@ -26,27 +24,11 @@ from nomad_simulations.schema_packages.general import Program
 from nomad.parsing.file_parser import TextParser
 from nomad.parsing.file_parser import Quantity
 from nomad_simulations.schema_packages.outputs import Outputs
-from nomad_simulations.schema_packages.properties import XASSpectrum
-from nomad_simulations.schema_packages.properties import AbsorptionSpectrum
-from nomad.metainfo import Quantity as mQuantity
-from nomad_parser_xas.schema_packages.schema_package import ROCISDFT_xas
+from nomad_parser_xas.schema_packages.schema_package import ROCISDFT_xas, ROCISDFT_xas_state
 import numpy as np
 
 
 re_float = '-?\d+\.\d+'
-
-def states_to_dict(text_block: str) -> Optional[dict[str, list[Union[int, float]]]]:
-    re_line = rf'(\d+)->(\d+)\s+:\s+{re_float}\s+\(({re_float})\)'
-    blocks = [re.search(re_line, line).group(0) for line in text_block.strip().split('\n')]
-
-    reshaped: dict[str, list[Union[int, float]]] = {'occ': [], 'virt': [], 'prob': [], 'amp': []}
-    for block in blocks:
-        reshaped['occ'].append = block[0]
-        reshaped['virt'].append = block[1]
-        reshaped['prob'].append = block[2]
-        reshaped['amp'].append = block[3]
-
-    return reshaped
 
 # def T_block(block):
 #    return np.array(block.strip().split())
@@ -57,14 +39,13 @@ orca_out_parse = TextParser(
         Quantity(
             'states',
             r'(STATE +\d+ +.+?\:[\s\S]+?)\n\n',
-            flatten=False,
             repeats=True,
             sub_parser=TextParser(
                 quantities=[
                     Quantity(
-                        'data_bystate',
-                        r'\d+cm\*\*-1\n([\s\S]+?)\n\n',
-                        str_operation=states_to_dict,
+                        'data_by_state',
+                        rf'(\d+)->(\d+)\s+:\s+({re_float})\s+\(({re_float})\)',
+                        repeats=True,
                     )
                 ],
             ),
@@ -94,16 +75,27 @@ class ORCANewParser(MatchingParser):
 
         orca_out_parse.mainfile = mainfile
 
-        setstates = np.array(orca_out_parse.states[0].data_bystate)
+        setstates: list[ROCISDFT_xas_state] = []
+        for state in orca_out_parse.states:
+            if (data_by_state := state.get('data_by_state')) is not None:
+                data_by_state = np.array(data_by_state).T
+                setstates.append(
+                    ROCISDFT_xas_state(
+                        occupied=data_by_state[0],
+                        virtual=data_by_state[1],
+                        trans_prob=data_by_state[2],
+                        trans_amp=data_by_state[3],
+                    )
+                )
 
-        dmq = np.array(orca_out_parse.polarization_totaldir[0].data_block)
+        # dmq = np.array(orca_out_parse.polarization_totaldir[0].data_block)
 
         program = Program(name='orca', version=orca_out_parse.get('version'))
         simulation.program = program
         simulation.outputs = [
             Outputs(
                 xas_spectra=[
-                    ROCISDFT_xas(orca_fosc_dmq=dmq.T[[1, 6]], orca_state=setstates)
+                    ROCISDFT_xas(orca_state=setstates)
                 ]
             )
         ]
